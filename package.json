@@ -2,7 +2,7 @@
   "name": "wordsabxy",
   "version": "1.0.0",
   "description": "Word memorization app with Xbox controller support",
-  "main": "src/main.js",
+  "main": "electron/main.js",
   "scripts": {
     "dev": "vite",
     "electron": "electron . --dev",
@@ -17,7 +17,7 @@
       "output": "dist-electron"
     },
     "files": [
-      "src/main.js",
+      "electron/main.js",
       "dist/**/*"
     ],
     "win": {
@@ -28,7 +28,13 @@
     "type": "git",
     "url": "git+https://github.com/forTheMoon33/WordsABXY.git"
   },
-  "keywords": ["word", "memorization", "xbox", "controller", "education"],
+  "keywords": [
+    "word",
+    "memorization",
+    "xbox",
+    "controller",
+    "education"
+  ],
   "author": "",
   "license": "ISC",
   "bugs": {
@@ -44,7 +50,10 @@
     "wait-on": "^7.2.0"
   },
   "dependencies": {
+    "exceljs": "^4.4.0",
+    "jszip": "^3.10.1",
     "lucide-react": "^0.263.1",
+    "papaparse": "^5.5.3",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   }
