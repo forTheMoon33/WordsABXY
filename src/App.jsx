@@ -22,6 +22,10 @@ const WordMemorizerApp = () => {
     const [cardFlipped, setCardFlipped] = useState(false);
     const [selectedCardTypeIdx, setSelectedCardTypeIdx] = useState(0);
     const [cachedQnAOptions, setCachedQnAOptions] = useState({});
+    const [newWordDraft, setNewWordDraft] = useState({});
+    const [selectedWordIds, setSelectedWordIds] = useState(new Set());
+
+
 
     useEffect(() => {
         loadWords();
@@ -407,6 +411,42 @@ const WordMemorizerApp = () => {
         input.click();
     };
 
+    const triggerAppendImport = () => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json,.txt,.xlsx,.xls';
+        input.onchange = async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            let imported = [];
+            const name = file.name.toLowerCase();
+
+            if (name.endsWith('.json')) {
+            imported = JSON.parse(await file.text());
+            } else if (name.endsWith('.txt')) {
+            imported = parseText(await file.text());
+            } else if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
+            imported = await parseExcel(file);
+            }
+
+            if (imported.length === 0) {
+            alert('No valid words found.');
+            return;
+            }
+
+            const appended = [...words, ...imported];
+            saveWords(appended);
+
+            alert(
+            `Appended ${imported.length} words.\n` +
+            `Total: ${appended.length}`
+            );
+        };
+
+        input.click();
+    };
+
     const startSession = () => {
         if (cardTypes.length === 0) {
             alert('Please create a card type first.');
@@ -756,6 +796,18 @@ const WordMemorizerApp = () => {
                             >
                                 Export Wordlist
                             </button>
+                            <button
+                                onClick={() => setScreen('addWord')}
+                                className="bg-green-500/30 hover:bg-green-500/50 text-green-200 px-6 py-3 rounded-lg"
+                                >
+                                Add Word
+                            </button>
+                            <button
+                                onClick={() => triggerAppendImport()}
+                                className="bg-green-500/30 hover:bg-green-500/50 text-green-200 px-6 py-3 rounded-lg"
+                                >
+                                Append Import
+                            </button>
                         </div>
                     </div>
 
@@ -768,6 +820,22 @@ const WordMemorizerApp = () => {
                             <table className="min-w-full border border-white/20 text-white text-sm">
                                 <thead className="bg-white/10">
                                     <tr>
+                                        <th className="px-4 py-2 border-b border-white/20">
+                                            <input
+                                                type="checkbox"
+                                                checked={
+                                                words.length > 0 &&
+                                                selectedWordIds.size === words.length
+                                                }
+                                                onChange={(e) => {
+                                                if (e.target.checked) {
+                                                    setSelectedWordIds(new Set(words.map(w => w.id)));
+                                                } else {
+                                                    setSelectedWordIds(new Set());
+                                                }
+                                                }}
+                                            />
+                                        </th>
                                         {tableHeaders.map((header, idx) => (
                                             <th
                                                 key={idx}
@@ -790,6 +858,23 @@ const WordMemorizerApp = () => {
 
                                         return (
                                             <tr key={word.id} className="hover:bg-white/10">
+                                                <td className="px-4 py-2 border-b border-white/20">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={selectedWordIds.has(word.id)}
+                                                        onChange={() => {
+                                                        setSelectedWordIds(prev => {
+                                                            const next = new Set(prev);
+                                                            if (next.has(word.id)) {
+                                                            next.delete(word.id);
+                                                            } else {
+                                                            next.add(word.id);
+                                                            }
+                                                            return next;
+                                                        });
+                                                        }}
+                                                    />
+                                                </td>
                                                 {tableHeaders.map((header, idx) => (
                                                     <td key={idx} className="px-4 py-2 border-b border-white/20">
                                                         {String(word[header]).substring(0, 30)}
@@ -1095,6 +1180,57 @@ const WordMemorizerApp = () => {
             </div>
         );
     }
+
+    if (screen === 'addWord') {
+        return (
+            <div className="min-h-screen bg-gradient-to-br from-green-900 to-emerald-900 p-8">
+            <div className="max-w-3xl mx-auto bg-white/10 p-8 rounded-2xl">
+
+                <button
+                onClick={() => setScreen('wordlist')}
+                className="text-white/80 mb-6"
+                >
+                ← Back
+                </button>
+
+                <h2 className="text-4xl font-bold text-white mb-6">
+                Add New Word
+                </h2>
+
+                <div className="space-y-4">
+                {wordKeys.map(key => (
+                    <input
+                    key={key}
+                    placeholder={key}
+                    value={newWordDraft[key] || ''}
+                    onChange={e =>
+                        setNewWordDraft(d => ({ ...d, [key]: e.target.value }))
+                    }
+                    className="w-full bg-white/20 text-white px-4 py-3 rounded-lg"
+                    />
+                ))}
+                </div>
+
+                <button
+                onClick={() => {
+                    const newWord = {
+                    id: Date.now(),
+                    ...newWordDraft
+                    };
+                    saveWords([...words, newWord]);
+                    setNewWordDraft({});
+                    setScreen('wordlist');
+                }}
+                className="w-full mt-6 bg-green-500 text-white py-4 rounded-xl text-xl font-semibold"
+                >
+                Save Word
+                </button>
+
+            </div>
+            </div>
+        );
+    }
+
 
     if (screen === 'complete') {
         return (
