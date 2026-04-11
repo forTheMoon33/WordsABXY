@@ -808,6 +808,20 @@ const WordMemorizerApp = () => {
                                 >
                                 Append Import
                             </button>
+
+                            {selectedWordIds.size > 0 && (
+                                <button
+                                    onClick={() => {
+                                        if (window.confirm(`Delete ${selectedWordIds.size} selected word${selectedWordIds.size > 1 ? 's' : ''}?`)) {
+                                            saveWords(words.filter(w => !selectedWordIds.has(w.id)));
+                                            setSelectedWordIds(new Set());
+                                        }
+                                    }}
+                                    className="bg-red-500/40 hover:bg-red-500/60 text-red-200 px-6 py-3 rounded-lg font-semibold"
+                                >
+                                    Delete Selected ({selectedWordIds.size})
+                                </button>
+                            )}
                         </div>
                     </div>
 
