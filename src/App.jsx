@@ -121,7 +121,7 @@ const GLOBAL_CSS = `
 
   /* word study card */
   .study-word { font-family: var(--mono); font-size: 38px; font-weight: 700; line-height: 1.1; }
-  .study-gender { font-size: 14px; color: var(--muted); font-style: italic; margin-top: 4px; }
+  .study-gender { font-size: 19px; color: var(--muted); font-style: italic; margin-top: 6px; letter-spacing: 0.01em; }
   .study-field-row { display: grid; grid-template-columns: 120px 1fr; gap: 8px 16px; align-items: baseline; }
   .study-field-key { font-size: 11px; font-family: var(--mono); color: var(--muted); text-transform: uppercase; }
   .study-field-val { font-size: 15px; color: var(--text); }
@@ -163,10 +163,10 @@ const GLOBAL_CSS = `
   input[type=checkbox] { accent-color: var(--accent2); width: 15px; height: 15px; }
 
   /* word field chips */
-  .field-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; font-size: 12px; font-family: var(--mono); color: var(--muted); cursor: pointer; user-select: none; transition: all .15s; }
-  .field-chip.on { color: var(--text); border-color: var(--accent2); background: #5b8fff10; }
+  .field-chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; background: var(--surface2); border: 1.5px solid var(--border); border-radius: 99px; font-size: 12px; font-family: var(--mono); color: var(--muted); cursor: pointer; user-select: none; transition: all .15s; }
+  .field-chip.on { color: var(--text); border-color: var(--accent2); background: #5b8fff18; font-weight: 600; }
   .field-chip .chip-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
-  .field-chip.on .chip-dot { background: var(--accent); }
+  .field-chip.on .chip-dot { background: var(--accent2); }
 
   /* emoji picker row */
   .emoji-row { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -339,27 +339,47 @@ function DailyPage({ words, cardTypes, stats, onSaveStats }) {
   const [done, setDone] = useState(false);
   const [score, setScore] = useState(0);
   const [wrongIds, setWrongIds] = useState([]);
+  const [sessionWords, setSessionWords] = useState([]);
 
   const cardType = cardTypes[0] || null;
 
   const buildQuestions = useCallback(() => {
-    if (!cardType || words.length === 0) return;
+    if (!cardTypes.length || words.length === 0) return;
+    const ct = cardTypes[0];
     // Due = words whose SRS timer has elapsed (or never reviewed)
     const due = words.filter(w => isDueNow(stats[w.id]));
     if (due.length === 0) { setQuestions([]); return; }
     const pool = shuffle(due).slice(0, 20);
+    setSessionWords(pool);
     setQuestions(pool.map(w => ({
       word: w,
-      options: buildQuizOptions(words, w, cardType.answerKey),
-      correct: w[cardType.answerKey],
+      ct,
+      options: buildQuizOptions(words, w, ct.answerKey),
+      correct: w[ct.answerKey],
     })));
     setQi(0); setSelected(null); setConfirmed(false); setDone(false);
     setScore(0); setWrongIds([]);
-  }, [cardType, words, stats]);
+  }, [cardTypes, words, stats]);
+
+  const buildCheckAgain = useCallback(() => {
+    if (!cardTypes.length || sessionWords.length === 0) return;
+    setQuestions(shuffle(
+      sessionWords.flatMap(w =>
+        cardTypes.map(ct => ({
+          word: w,
+          ct,
+          options: buildQuizOptions(words, w, ct.answerKey),
+          correct: w[ct.answerKey],
+        }))
+      )
+    ));
+    setQi(0); setSelected(null); setConfirmed(false); setDone(false);
+    setScore(0); setWrongIds([]);
+  }, [cardTypes, words, sessionWords]);
 
   useEffect(() => { buildQuestions(); }, [buildQuestions]);
 
-  if (!cardType) return (
+  if (!cardTypes.length) return (
     <div className="page"><div className="page-inner">
       <div className="page-header"><div className="page-title">Daily Practice</div></div>
       <div className="empty-state">
@@ -405,7 +425,7 @@ function DailyPage({ words, cardTypes, stats, onSaveStats }) {
           {wrongIds.length} missed — they'll return sooner
         </div>
       )}
-      <button className="btn btn-primary" onClick={buildQuestions}>Practice Again</button>
+      <button className="btn btn-primary" onClick={buildCheckAgain}>Check Again</button>
     </div></div>
   );
 
@@ -474,24 +494,12 @@ function DailyPage({ words, cardTypes, stats, onSaveStats }) {
           {/* The word */}
           <div style={{
             fontFamily:'var(--mono)', fontWeight:700,
-            fontSize: q.word[cardType.questionKey]?.length > 12 ? 28 : 42,
+            fontSize: q.word[q.ct.questionKey]?.length > 12 ? 28 : 42,
             lineHeight:1.1, wordBreak:'break-word',
             marginTop:emojiTag ? 8 : 0,
-            marginBottom: q.word.gender ? 6 : 0,
           }}>
-            {q.word[cardType.questionKey]}
+            {q.word[q.ct.questionKey]}
           </div>
-
-          {q.word.gender && (
-            <div style={{fontSize:13,color:'var(--muted)',fontStyle:'italic'}}>{q.word.gender}</div>
-          )}
-
-          {/* Wrong streak warning */}
-          {(wordStat.wrongStreak || 0) >= 2 && (
-            <div style={{marginTop:10,fontSize:12,color:'var(--warn)',fontFamily:'var(--mono)'}}>
-              ⚠ {wordStat.wrongStreak} wrong in a row
-            </div>
-          )}
         </div>
 
         {/* Choices — 2×2 grid, gamepad style */}
@@ -1295,12 +1303,21 @@ function WordlistPage({ words, cardTypes, customFields, onSaveWords, onSaveCardT
             )}
             {qtStep === 'selectQ' && (
               <div>
-                <div className="section-label">Select Question Field</div>
-                <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                <div style={{fontFamily:'var(--mono)',fontSize:10,color:'var(--accent2)',letterSpacing:'.1em',textTransform:'uppercase',marginBottom:4}}>Step 1 of 2</div>
+                <div style={{fontSize:17,fontWeight:600,color:'var(--text)',marginBottom:16}}>Select Question Field</div>
+                <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
                   {allFields.map(f => (
-                    <button key={f} className="btn btn-ghost" style={{justifyContent:'space-between'}}
+                    <button key={f}
+                      style={{
+                        padding:'5px 14px', borderRadius:99, border:'1.5px solid var(--border)',
+                        background:'var(--surface2)', color:'var(--muted)',
+                        fontFamily:'var(--mono)', fontSize:12, cursor:'pointer',
+                        transition:'all .15s',
+                      }}
+                      onMouseEnter={e => { e.currentTarget.style.borderColor='var(--accent2)'; e.currentTarget.style.color='var(--text)'; }}
+                      onMouseLeave={e => { e.currentTarget.style.borderColor='var(--border)'; e.currentTarget.style.color='var(--muted)'; }}
                       onClick={() => { setQtDraft(d => ({...d, questionKey:f})); setQtStep('selectA'); }}>
-                      {f} <Icon.ChevronRight/>
+                      {f}
                     </button>
                   ))}
                 </div>
@@ -1308,20 +1325,32 @@ function WordlistPage({ words, cardTypes, customFields, onSaveWords, onSaveCardT
             )}
             {qtStep === 'selectA' && (
               <div>
-                <div className="section-label">Select Answer Field (for: <b>{qtDraft.questionKey}</b>)</div>
-                <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                <div style={{fontFamily:'var(--mono)',fontSize:10,color:'var(--accent2)',letterSpacing:'.1em',textTransform:'uppercase',marginBottom:4}}>Step 2 of 2</div>
+                <div style={{fontSize:17,fontWeight:600,color:'var(--text)',marginBottom:4}}>Select Answer Field</div>
+                <div style={{fontSize:12,color:'var(--muted)',marginBottom:16}}>
+                  Question: <span style={{fontFamily:'var(--mono)',color:'var(--text)'}}>{qtDraft.questionKey}</span>
+                </div>
+                <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
                   {allFields.filter(f=>f!==qtDraft.questionKey).map(f => (
-                    <button key={f} className="btn btn-ghost" style={{justifyContent:'space-between'}}
+                    <button key={f}
+                      style={{
+                        padding:'5px 14px', borderRadius:99, border:'1.5px solid var(--border)',
+                        background:'var(--surface2)', color:'var(--muted)',
+                        fontFamily:'var(--mono)', fontSize:12, cursor:'pointer',
+                        transition:'all .15s',
+                      }}
+                      onMouseEnter={e => { e.currentTarget.style.borderColor='var(--accent2)'; e.currentTarget.style.color='var(--text)'; }}
+                      onMouseLeave={e => { e.currentTarget.style.borderColor='var(--border)'; e.currentTarget.style.color='var(--muted)'; }}
                       onClick={() => {
                         const ct = { id:Date.now(), questionKey:qtDraft.questionKey, answerKey:f, name:`${qtDraft.questionKey} → ${f}` };
                         onSaveCardTypes([...cardTypes, ct]);
                         setQtStep('list');
                       }}>
-                      {f} <Icon.ChevronRight/>
+                      {f}
                     </button>
                   ))}
                 </div>
-                <button className="btn btn-ghost btn-sm" style={{marginTop:12}} onClick={() => setQtStep('list')}>← Back</button>
+                <button className="btn btn-ghost btn-sm" style={{marginTop:16}} onClick={() => setQtStep('selectQ')}>← Back</button>
               </div>
             )}
           </div>
