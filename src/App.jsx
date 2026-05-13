@@ -339,7 +339,11 @@ function DailyPage({ words, cardTypes, stats, onSaveStats }) {
   const [done, setDone] = useState(false);
   const [score, setScore] = useState(0);
   const [wrongIds, setWrongIds] = useState([]);
-  const [sessionWords, setSessionWords] = useState([]);
+
+  // Use refs so stats updates and sessionWords never re-trigger buildQuestions
+  const statsRef = useRef(stats);
+  useEffect(() => { statsRef.current = stats; }, [stats]);
+  const sessionWordsRef = useRef([]);
 
   const cardType = cardTypes[0] || null;
 
@@ -347,10 +351,10 @@ function DailyPage({ words, cardTypes, stats, onSaveStats }) {
     if (!cardTypes.length || words.length === 0) return;
     const ct = cardTypes[0];
     // Due = words whose SRS timer has elapsed (or never reviewed)
-    const due = words.filter(w => isDueNow(stats[w.id]));
+    const due = words.filter(w => isDueNow(statsRef.current[w.id]));
     if (due.length === 0) { setQuestions([]); return; }
     const pool = shuffle(due).slice(0, 20);
-    setSessionWords(pool);
+    sessionWordsRef.current = pool;
     setQuestions(pool.map(w => ({
       word: w,
       ct,
@@ -359,12 +363,12 @@ function DailyPage({ words, cardTypes, stats, onSaveStats }) {
     })));
     setQi(0); setSelected(null); setConfirmed(false); setDone(false);
     setScore(0); setWrongIds([]);
-  }, [cardTypes, words, stats]);
+  }, [cardTypes, words]); // stats intentionally omitted — read via statsRef
 
   const buildCheckAgain = useCallback(() => {
-    if (!cardTypes.length || sessionWords.length === 0) return;
+    if (!cardTypes.length || sessionWordsRef.current.length === 0) return;
     setQuestions(shuffle(
-      sessionWords.flatMap(w =>
+      sessionWordsRef.current.flatMap(w =>
         cardTypes.map(ct => ({
           word: w,
           ct,
@@ -375,7 +379,7 @@ function DailyPage({ words, cardTypes, stats, onSaveStats }) {
     ));
     setQi(0); setSelected(null); setConfirmed(false); setDone(false);
     setScore(0); setWrongIds([]);
-  }, [cardTypes, words, sessionWords]);
+  }, [cardTypes, words]); // sessionWordsRef is stable, no need in deps
 
   useEffect(() => { buildQuestions(); }, [buildQuestions]);
 
@@ -1144,8 +1148,8 @@ function WordlistPage({ words, cardTypes, customFields, onSaveWords, onSaveCardT
     </div>
   );
 
-  // List browser (when lists exist, show them)
-  if (!activeList && lists.length > 0) return (
+  // List browser — show whenever no active list is selected (and not empty state above)
+  if (!activeList) return (
     <div className="page">
       {showWizard && (
         <ImportWizard words={words} customFields={customFields}
