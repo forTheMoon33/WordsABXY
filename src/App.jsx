@@ -348,6 +348,28 @@ function ResultPopup({ correct, onClose }) {
   );
 }
 
+// ─── LIST PILL SELECTOR ───────────────────────────────────────────────────────
+function ListPillSelector({ lists, value, onChange }) {
+  return (
+    <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:20}}>
+      {[{ id:'__all__', name:'All Lists' }, ...lists].map(l => {
+        const active = value === l.id;
+        return (
+          <button key={l.id} onClick={() => onChange(l.id)} style={{
+            padding:'6px 14px', borderRadius:99, border:'1.5px solid',
+            fontFamily:'var(--mono)', fontSize:12, cursor:'pointer', transition:'all .15s',
+            borderColor: active ? 'var(--accent)' : 'var(--border)',
+            background:  active ? '#7fffb218'     : 'transparent',
+            color:       active ? 'var(--accent)'  : 'var(--muted)',
+          }}>
+            {l.name}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── DAILY PAGE ──────────────────────────────────────────────────────────────
 const CHOICE_LABELS = ['A','B','C','D'];
 const SLOT_COLORS = [
@@ -357,7 +379,17 @@ const SLOT_COLORS = [
   { bg:'#2a2a1a', border:'#ffc85b', text:'#ffe08f' },
 ];
 
-function DailyPage({ words, cardTypes, stats, onSaveStats, lists, setLists, activeListId, setActiveListId }) {
+function DailyPage({ lists, stats, onSaveStats }) {
+  // ── Persisted list selection ─────────────────────────────────────────────
+  const [dailyListSel, setDailyListSelRaw] = useState(() => {
+    const stored = ls('dailyListSel', '__all__');
+    if (stored === '__all__') return '__all__';
+    return lists.find(l => l.id === stored) ? stored : '__all__';
+  });
+  const setDailyListSel = (v) => { setDailyListSelRaw(v); lsSave('dailyListSel', v); };
+
+  // ── Session state ────────────────────────────────────────────────────────
+  const [sessionStarted, setSessionStarted] = useState(false);
   const [questions, setQuestions] = useState(null);
   const [qi, setQi] = useState(0);
   const [selected, setSelected] = useState(null);
@@ -369,78 +401,152 @@ function DailyPage({ words, cardTypes, stats, onSaveStats, lists, setLists, acti
 
   const statsRef = useRef(stats);
   useEffect(() => { statsRef.current = stats; }, [stats]);
-  const sessionWordsRef = useRef([]);
+  // Each entry: { word, listCardTypes[] } — locked at session start
+  const sessionCandidatesRef = useRef([]);
 
-  const cardType = cardTypes[0] || null;
+  // ── Derive candidates for selected list(s) ───────────────────────────────
+  // For "All Lists": flatten all lists that have cardTypes, tagging each word
+  // with its own list's cardTypes.
+  // For a specific list: all words in that list with that list's cardTypes.
+  const getCandidates = useCallback(() => {
+    if (dailyListSel === '__all__') {
+      return lists.flatMap(list =>
+        list.cardTypes.length > 0
+          ? list.words.map(w => ({ word: w, listCardTypes: list.cardTypes }))
+          : []
+      );
+    }
+    const list = lists.find(l => l.id === dailyListSel);
+    if (!list || !list.cardTypes.length) return [];
+    return list.words.map(w => ({ word: w, listCardTypes: list.cardTypes }));
+  }, [lists, dailyListSel]);
 
-  const buildQuestions = useCallback(() => {
-    if (!cardTypes.length || words.length === 0) return;
-    const ct = cardTypes[0];
-    const due = words.filter(w => isDueNow(statsRef.current[w.id]));
-    if (due.length === 0) { setQuestions([]); return; }
-    const pool = shuffle(due).slice(0, 20);
-    sessionWordsRef.current = pool;
-    setQuestions(pool.map(w => ({
-      word: w,
-      ct,
-      options: buildQuizOptions(words, w, ct.answerKey),
-      correct: w[ct.answerKey],
-    })));
+  // Build one question per candidate using first cardType of the word's list
+  const makeQuestions = (pool, allWords) =>
+    pool.map(({ word, listCardTypes }) => {
+      const ct = listCardTypes[0];
+      return { word, ct, options: buildQuizOptions(allWords, word, ct.answerKey), correct: word[ct.answerKey] };
+    });
+
+  // ── Session actions ──────────────────────────────────────────────────────
+  const startSession = () => {
+    const candidates = getCandidates();
+    if (!candidates.length) return;
+    const allWords = candidates.map(c => c.word);
+    const due = candidates.filter(c => isDueNow(statsRef.current[c.word.id]));
+    sessionCandidatesRef.current = candidates;
+    if (!due.length) {
+      setQuestions([]);
+    } else {
+      const pool = shuffle(due).slice(0, 20);
+      setQuestions(makeQuestions(pool, allWords));
+    }
     setQi(0); setSelected(null); setConfirmed(false); setDone(false);
     setScore(0); setWrongIds([]);
-  }, [cardTypes, words]);
+    setSessionStarted(true);
+  };
 
-  const buildCheckAgain = useCallback(() => {
-    if (!cardTypes.length || sessionWordsRef.current.length === 0) return;
+  // Check Again uses all session candidates × all their cardTypes
+  const buildCheckAgain = () => {
+    const cands = sessionCandidatesRef.current;
+    if (!cands.length) return;
+    const allWords = cands.map(c => c.word);
     setQuestions(shuffle(
-      sessionWordsRef.current.flatMap(w =>
-        cardTypes.map(ct => ({
-          word: w,
-          ct,
-          options: buildQuizOptions(words, w, ct.answerKey),
-          correct: w[ct.answerKey],
+      cands.flatMap(({ word, listCardTypes }) =>
+        listCardTypes.map(ct => ({
+          word, ct,
+          options: buildQuizOptions(allWords, word, ct.answerKey),
+          correct: word[ct.answerKey],
         }))
       )
     ));
     setQi(0); setSelected(null); setConfirmed(false); setDone(false);
     setScore(0); setWrongIds([]);
-  }, [cardTypes, words]);
+  };
 
-  useEffect(() => { buildQuestions(); }, [buildQuestions]);
+  const endSession = () => {
+    setSessionStarted(false);
+    setQuestions(null);
+    setDone(false);
+    setScore(0);
+    setWrongIds([]);
+    sessionCandidatesRef.current = [];
+  };
 
-  if (!cardTypes.length) return (
-    <div className="page"><div className="page-inner">
-      <div className="page-header"><div className="page-title">Daily Practice</div></div>
-      <div className="empty-state">
-        <div className="e-icon">⚙️</div>
-        <div className="e-label">Go to Wordlist → Question Type to set up a card type.</div>
-      </div>
-    </div></div>
-  );
+  // ── Lobby (pre-session) ──────────────────────────────────────────────────
+  if (!sessionStarted) {
+    const candidates = getCandidates();
+    const dueCount = candidates.filter(c => isDueNow(statsRef.current[c.word.id])).length;
+    const canStart = candidates.length > 0;
+    return (
+      <div className="page"><div className="page-inner">
+        <div className="page-header">
+          <div className="page-title">Daily Practice</div>
+          <div className="page-sub">Choose a list to practice</div>
+        </div>
 
-  if (!questions || questions.length === 0) {
-    const upcoming = words
-      .map(w => ({ w, s: stats[w.id] }))
+        <ListPillSelector lists={lists} value={dailyListSel} onChange={setDailyListSel} />
+
+        <div className="card card-p" style={{marginBottom:20}}>
+          {canStart ? (
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <div>
+                <div style={{fontFamily:'var(--mono)',fontSize:28,color:'var(--accent)'}}>{dueCount}</div>
+                <div style={{fontSize:11,color:'var(--muted)',marginTop:2}}>due now</div>
+              </div>
+              <div style={{textAlign:'right'}}>
+                <div style={{fontFamily:'var(--mono)',fontSize:28,color:'var(--text)'}}>{candidates.length}</div>
+                <div style={{fontSize:11,color:'var(--muted)',marginTop:2}}>total words</div>
+              </div>
+            </div>
+          ) : (
+            <div style={{color:'var(--warn)',fontSize:13}}>
+              {dailyListSel === '__all__'
+                ? 'No lists have card types set up. Go to Wordlist → Question Type.'
+                : 'This list has no card types set up. Go to Wordlist → Question Type.'}
+            </div>
+          )}
+        </div>
+
+        <button className="btn btn-primary"
+          style={{width:'100%',justifyContent:'center',padding:'15px',fontSize:14}}
+          onClick={startSession} disabled={!canStart}>
+          Start Practice
+        </button>
+      </div></div>
+    );
+  }
+
+  // ── All caught up (session running, nothing due) ─────────────────────────
+  if (questions && questions.length === 0) {
+    const cands = sessionCandidatesRef.current;
+    const upcoming = cands
+      .map(c => ({ w: c.word, s: stats[c.word.id] }))
       .filter(({ s }) => s?.nextReviewAt && s.nextReviewAt > Date.now())
       .sort((a,b) => a.s.nextReviewAt - b.s.nextReviewAt)[0];
+    const firstCt = cands[0]?.listCardTypes?.[0];
     return (
       <div className="page"><div className="page-inner">
         <div className="page-header"><div className="page-title">Daily Practice</div></div>
         <div className="empty-state">
           <div className="e-icon">🎉</div>
           <div className="e-label mono" style={{marginBottom:12}}>All caught up!</div>
-          {upcoming && (
-            <div style={{color:'var(--muted)',fontSize:13}}>
+          {upcoming && firstCt && (
+            <div style={{color:'var(--muted)',fontSize:13,marginBottom:4}}>
               Next review in <b style={{color:'var(--accent)'}}>{nextReviewLabel(upcoming.s)}</b>
-              {' '}— <span style={{fontFamily:'var(--mono)'}}>{upcoming.w[cardType.questionKey]}</span>
+              {' '}— <span style={{fontFamily:'var(--mono)'}}>{upcoming.w[firstCt.questionKey]}</span>
             </div>
           )}
-          <button className="btn btn-ghost" style={{marginTop:20}} onClick={buildQuestions}>Check Again</button>
+          <div style={{display:'flex',gap:10,justifyContent:'center',marginTop:20}}>
+            <button className="btn btn-ghost" onClick={endSession}>← Back</button>
+            <button className="btn btn-primary" onClick={buildCheckAgain}>Practice Anyway</button>
+          </div>
         </div>
       </div></div>
     );
   }
 
+  // ── Done screen ──────────────────────────────────────────────────────────
   if (done) return (
     <div className="page"><div className="page-inner" style={{textAlign:'center',paddingTop:60}}>
       <div style={{fontSize:64,marginBottom:16}}>🏁</div>
@@ -453,10 +559,14 @@ function DailyPage({ words, cardTypes, stats, onSaveStats, lists, setLists, acti
           {wrongIds.length} missed — they'll return sooner
         </div>
       )}
-      <button className="btn btn-primary" onClick={buildCheckAgain}>Check Again</button>
+      <div style={{display:'flex',gap:10,justifyContent:'center'}}>
+        <button className="btn btn-ghost" onClick={endSession}>← Back</button>
+        <button className="btn btn-primary" onClick={buildCheckAgain}>Check Again</button>
+      </div>
     </div></div>
   );
 
+  // ── Quiz ─────────────────────────────────────────────────────────────────
   const q = questions[qi];
   const wordStat = stats[q.word.id] || {};
   const isHardWord = (wordStat.totalWrong || 0) >= 3;
@@ -525,10 +635,7 @@ function DailyPage({ words, cardTypes, stats, onSaveStats, lists, setLists, acti
           </div>
         </div>
 
-        <div style={{
-          display:'grid', gridTemplateColumns:'1fr 1fr',
-          gap:10, marginBottom:20,
-        }}>
+        <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:10, marginBottom:20}}>
           {q.options.map((opt, idx) => {
             const slot = SLOT_COLORS[idx];
             let bg = slot.bg, border = slot.border, color = slot.text;
@@ -555,16 +662,10 @@ function DailyPage({ words, cardTypes, stats, onSaveStats, lists, setLists, acti
                   display:'flex', flexDirection:'column', gap:4,
                   ...extraStyle,
                 }}>
-                <div style={{
-                  fontFamily:'var(--mono)', fontSize:11, fontWeight:700,
-                  color: border, opacity: confirmed ? 0.7 : 1,
-                }}>
+                <div style={{fontFamily:'var(--mono)', fontSize:11, fontWeight:700, color: border, opacity: confirmed ? 0.7 : 1}}>
                   {CHOICE_LABELS[idx]}
                 </div>
-                <div style={{
-                  color, fontSize:14, fontFamily:'var(--sans)',
-                  lineHeight:1.3, wordBreak:'break-word',
-                }}>
+                <div style={{color, fontSize:14, fontFamily:'var(--sans)', lineHeight:1.3, wordBreak:'break-word'}}>
                   {opt}
                 </div>
                 {confirmed && opt === q.correct && (
@@ -595,22 +696,52 @@ function DailyPage({ words, cardTypes, stats, onSaveStats, lists, setLists, acti
 }
 
 // ─── STUDY PAGE ───────────────────────────────────────────────────────────────
-function StudyPage({ words, onSaveWord, lists, setLists, activeListId, setActiveListId }) {
+function StudyPage({ lists, onSaveWord }) {
+  // ── Persisted list selection ─────────────────────────────────────────────
+  const [studyListSel, setStudyListSelRaw] = useState(() => {
+    const stored = ls('studyListSel', '__all__');
+    if (stored === '__all__') return '__all__';
+    return lists.find(l => l.id === stored) ? stored : '__all__';
+  });
+  const setStudyListSel = (v) => { setStudyListSelRaw(v); lsSave('studyListSel', v); };
+
+  // ── Session state ────────────────────────────────────────────────────────
+  const [sessionStarted, setSessionStarted] = useState(false);
+  // Pool ids are locked at session start for stability
+  const [poolIds, setPoolIds] = useState([]);
+
   const [idx, setIdx] = useState(0);
   const [noting, setNoting] = useState(false);
   const [noteVal, setNoteVal] = useState('');
   const [quit, setQuit] = useState(false);
   const [done, setDone] = useState(false);
 
-  // Build stable pool from words prop at session start (not from localStorage directly)
-  const [poolIds] = useState(() => {
-    const unstudied = words.filter(w => !w.note || w.note.trim() === '');
-    const source = unstudied.length > 0 ? unstudied : words;
-    return source.map(w => w.id);
-  });
-  const pool = poolIds.map(id => words.find(w => w.id === id)).filter(Boolean);
-
   const noteRef = useRef('');
+
+  // All words live (across all lists) — used to look up words by id so notes
+  // appear immediately after saving without restarting the session.
+  const allLiveWords = useMemo(() => lists.flatMap(l => l.words), [lists]);
+  const pool = poolIds.map(id => allLiveWords.find(w => w.id === id)).filter(Boolean);
+
+  const getSourceWords = useCallback(() => {
+    if (studyListSel === '__all__') return lists.flatMap(l => l.words);
+    return lists.find(l => l.id === studyListSel)?.words ?? [];
+  }, [lists, studyListSel]);
+
+  const startSession = () => {
+    const source = getSourceWords();
+    if (!source.length) return;
+    const unstudied = source.filter(w => !w.note || w.note.trim() === '');
+    const pool = unstudied.length > 0 ? unstudied : source;
+    setPoolIds(pool.map(w => w.id));
+    setIdx(0); setNoting(false); setDone(false); setQuit(false);
+    setSessionStarted(true);
+  };
+
+  const endSession = () => {
+    setSessionStarted(false);
+    setPoolIds([]);
+  };
 
   useEffect(() => {
     if (pool.length > 0 && idx < pool.length) {
@@ -622,23 +753,71 @@ function StudyPage({ words, onSaveWord, lists, setLists, activeListId, setActive
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idx]);
 
+  // ── Lobby (pre-session) ──────────────────────────────────────────────────
+  if (!sessionStarted) {
+    const source = getSourceWords();
+    const unstudied = source.filter(w => !w.note || w.note.trim() === '');
+    return (
+      <div className="page"><div className="page-inner">
+        <div className="page-header">
+          <div className="page-title">Study</div>
+          <div className="page-sub">Choose a list to study</div>
+        </div>
+
+        <ListPillSelector lists={lists} value={studyListSel} onChange={setStudyListSel} />
+
+        <div className="card card-p" style={{marginBottom:20}}>
+          {source.length > 0 ? (
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <div>
+                <div style={{fontFamily:'var(--mono)',fontSize:28,color:'var(--accent)'}}>
+                  {unstudied.length > 0 ? unstudied.length : source.length}
+                </div>
+                <div style={{fontSize:11,color:'var(--muted)',marginTop:2}}>
+                  {unstudied.length > 0 ? 'words to study' : 'words (all noted — will restart)'}
+                </div>
+              </div>
+              <div style={{textAlign:'right'}}>
+                <div style={{fontFamily:'var(--mono)',fontSize:28,color:'var(--text)'}}>{source.length}</div>
+                <div style={{fontSize:11,color:'var(--muted)',marginTop:2}}>total words</div>
+              </div>
+            </div>
+          ) : (
+            <div style={{color:'var(--muted)',fontSize:13}}>No words in this selection.</div>
+          )}
+        </div>
+
+        <button className="btn btn-primary"
+          style={{width:'100%',justifyContent:'center',padding:'15px',fontSize:14}}
+          onClick={startSession} disabled={source.length === 0}>
+          Start Studying
+        </button>
+      </div></div>
+    );
+  }
+
+  // ── Done / Quit ──────────────────────────────────────────────────────────
   if (quit || done || pool.length === 0) return (
     <div className="page">
       <div className="page-inner" style={{textAlign:'center',paddingTop:60}}>
         <div style={{fontSize:64,marginBottom:16}}>{done ? '✅' : '📚'}</div>
         <div className="page-title mono" style={{fontSize:24,marginBottom:8}}>
-          {pool.length === 0 ? 'No words yet' : done ? 'All done!' : 'Study paused'}
+          {pool.length === 0 ? 'No words' : done ? 'All done!' : 'Study paused'}
         </div>
         <div style={{color:'var(--muted)',fontSize:14,marginBottom:32}}>
-          {pool.length === 0 ? 'Import words in Wordlist first.' : 'Come back anytime.'}
+          {pool.length === 0 ? 'No words in this selection.' : 'Come back anytime.'}
         </div>
-        <button className="btn btn-ghost" onClick={() => { setIdx(0); setDone(false); setQuit(false); }}>
-          Restart
-        </button>
+        <div style={{display:'flex',gap:10,justifyContent:'center'}}>
+          <button className="btn btn-ghost" onClick={endSession}>← Back to Lists</button>
+          <button className="btn btn-primary" onClick={() => { setIdx(0); setDone(false); setQuit(false); }}>
+            Restart
+          </button>
+        </div>
       </div>
     </div>
   );
 
+  // ── Study card ───────────────────────────────────────────────────────────
   const word = pool[idx];
 
   const saveNote = () => {
@@ -660,10 +839,10 @@ function StudyPage({ words, onSaveWord, lists, setLists, activeListId, setActive
   };
 
   const DISPLAY = [
-    { key:'meaning',            label:'Meaning' },
-    { key:'translation_en',     label:'EN' },
-    { key:'translation_cn',     label:'中文' },
-    { key:'example',            label:'Example' },
+    { key:'meaning',              label:'Meaning' },
+    { key:'translation_en',       label:'EN' },
+    { key:'translation_cn',       label:'中文' },
+    { key:'example',              label:'Example' },
     { key:'example_without_word', label:'Fill-in' },
   ];
 
@@ -710,7 +889,8 @@ function StudyPage({ words, onSaveWord, lists, setLists, activeListId, setActive
                 <button key={e} className="emoji-btn" onClick={() => addEmoji(e)}>{e}</button>
               ))}
             </div>
-            <textarea className="field" value={noteVal} onChange={e=>{ noteRef.current=e.target.value; setNoteVal(e.target.value); }}
+            <textarea className="field" value={noteVal}
+              onChange={e => { noteRef.current = e.target.value; setNoteVal(e.target.value); }}
               placeholder="Type your note…" rows={3}/>
             <div style={{display:'flex',gap:8,marginTop:10}}>
               <button className="btn btn-primary" onClick={saveNote}>Save Note</button>
@@ -721,7 +901,8 @@ function StudyPage({ words, onSaveWord, lists, setLists, activeListId, setActive
           <div className="card card-p" style={{marginBottom:16,border:'1px solid var(--accent2)30'}}>
             <div style={{fontSize:11,fontFamily:'var(--mono)',color:'var(--muted)',marginBottom:6}}>YOUR NOTE</div>
             <div style={{fontSize:15,whiteSpace:'pre-wrap'}}>{word.note}</div>
-            <button className="btn btn-ghost btn-sm" style={{marginTop:10}} onClick={() => { setNoteVal(word.note); setNoting(true); }}>
+            <button className="btn btn-ghost btn-sm" style={{marginTop:10}}
+              onClick={() => { setNoteVal(word.note); setNoting(true); }}>
               Edit Note
             </button>
           </div>
@@ -1666,18 +1847,13 @@ export default function App() {
   return (
     <>
       {tab === 'daily' && <DailyPage
-        words={allWords}
-        cardTypes={activeList?.cardTypes ?? []}
+        lists={lists}
         stats={stats}
         onSaveStats={saveStats}
-        lists={lists} setLists={saveLists}
-        activeListId={activeListId} setActiveListId={setActiveListId}
       />}
       {tab === 'study' && <StudyPage
-        words={allWords}
+        lists={lists}
         onSaveWord={saveWordGlobal}
-        lists={lists} setLists={saveLists}
-        activeListId={activeListId} setActiveListId={setActiveListId}
       />}
       {tab === 'wordlist' && <WordlistPage
         lists={lists} setLists={saveLists}
