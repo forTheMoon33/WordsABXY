@@ -1074,6 +1074,10 @@ function WordlistPage({ words, cardTypes, customFields, onSaveWords, onSaveCardT
   // Delete mode
   const [selected, setSelected] = useState(new Set());
 
+  // New list inline form
+  const [showNewListForm, setShowNewListForm] = useState(false);
+  const [newListName, setNewListName] = useState('');
+
   // Question type wizard
   const [qtStep, setQtStep] = useState('list'); // 'list'|'selectQ'|'selectA'|'done'
   const [qtDraft, setQtDraft] = useState({});
@@ -1121,10 +1125,12 @@ function WordlistPage({ words, cardTypes, customFields, onSaveWords, onSaveCardT
   const allFields = allDisplayFields;
 
   // ── create list ─────────────────────────────────────────
-  const createList = () => {
-    const name = window.prompt('List name:'); if (!name) return;
-    const l = { id: Date.now(), name, wordIds: words.map(w => w.id) };
+  const createList = () => setShowNewListForm(true);
+  const confirmCreateList = () => {
+    if (!newListName.trim()) return;
+    const l = { id: Date.now(), name: newListName.trim(), wordIds: words.map(w => w.id) };
     saveLists([...lists, l]);
+    setNewListName(''); setShowNewListForm(false);
   };
 
   // ── render ──────────────────────────────────────────────
@@ -1191,6 +1197,21 @@ function WordlistPage({ words, cardTypes, customFields, onSaveWords, onSaveCardT
             </button>
           </div>
         ))}
+        {showNewListForm && (
+          <div className="card card-p" style={{marginTop:8}}>
+            <div style={{fontFamily:'var(--mono)',fontSize:13,marginBottom:10}}>New List</div>
+            <input className="field" autoFocus
+              placeholder="List name…"
+              value={newListName}
+              onChange={e => setNewListName(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') confirmCreateList(); if (e.key === 'Escape') { setShowNewListForm(false); setNewListName(''); } }}
+            />
+            <div style={{display:'flex',gap:8,marginTop:10}}>
+              <button className="btn btn-primary btn-sm" onClick={confirmCreateList} disabled={!newListName.trim()}>Create</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => { setShowNewListForm(false); setNewListName(''); }}>Cancel</button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
