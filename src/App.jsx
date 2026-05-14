@@ -287,6 +287,15 @@ function nextReviewLabel(stat) {
 
 const QUICK_EMOJIS = ['⭐','❤️','🔥','💡','❓','😅','🧠','📌','👀','✅','❌','🎯'];
 
+const EMOJI_CATEGORIES = [
+  { name:'Study',    emojis:['📚','📖','✏️','📝','🖊️','📓','📔','📒','📕','📗','📘','📙','📜','📋','📌','📍','🗂️','📁','🗃️','💡'] },
+  { name:'Feelings', emojis:['😀','😊','😅','😂','🤔','😮','😱','😴','🤗','😎','😤','😭','🥺','🤯','😬','😰','🙏','💪','👍','👎'] },
+  { name:'Status',   emojis:['✅','❌','⭐','🔴','🟡','🟢','🔵','🟣','⚠️','🚀','🎯','🏁','🔑','💎','🏆','🥇','🔥','💧','⚡','🌊'] },
+  { name:'Objects',  emojis:['🧠','❤️','💔','🌟','🌙','☀️','🌈','🎵','🎶','🎮','🕹️','💻','📱','⌨️','🖥️','🔍','🔊','📢','🔔','⏰'] },
+  { name:'Nature',   emojis:['🌸','🌺','🌹','🌻','🌼','🍀','🌿','🌱','🍃','🌲','🌳','🌴','🦋','🐝','🐢','🦊','🐬','🦁','🌊','🏔️'] },
+  { name:'Food',     emojis:['☕','🍵','🧋','🍎','🍊','🍋','🍇','🍓','🫐','🍰','🎂','🍫','🍬','🍭','🍕','🍔','🌮','🥗','🍱','🍣'] },
+];
+
 function extractEmojis(note) {
   if (!note) return '';
   const emojiRegex = /\p{Emoji_Presentation}|\p{Extended_Pictographic}/gu;
@@ -695,6 +704,107 @@ function DailyPage({ lists, stats, onSaveStats }) {
   );
 }
 
+// ─── EMOJI PICKER ────────────────────────────────────────────────────────────
+function EmojiPicker({ onInsert }) {
+  const [pinned, setPinnedRaw] = useState(() => ls('pinnedEmojis', QUICK_EMOJIS));
+  const [open, setOpen] = useState(false);
+
+  const savePinned = (arr) => { setPinnedRaw(arr); lsSave('pinnedEmojis', arr); };
+  const pin   = (e) => { if (!pinned.includes(e)) savePinned([...pinned, e]); };
+  const unpin = (e) => savePinned(pinned.filter(p => p !== e));
+
+  return (
+    <div style={{marginBottom:10}}>
+      {/* Pinned row */}
+      <div style={{display:'flex',flexWrap:'wrap',gap:6,alignItems:'center',marginBottom:6}}>
+        {pinned.map(e => (
+          <div key={e} style={{position:'relative',display:'inline-flex',flexShrink:0}}>
+            <button onClick={() => onInsert(e)} style={{
+              background:'var(--surface2)', border:'1px solid var(--border)',
+              borderRadius:8, padding:'5px 8px', fontSize:19, cursor:'pointer',
+              transition:'border-color .15s', lineHeight:1,
+            }}
+            onMouseEnter={ev => ev.currentTarget.style.borderColor='var(--accent)'}
+            onMouseLeave={ev => ev.currentTarget.style.borderColor='var(--border)'}>
+              {e}
+            </button>
+            <button onClick={() => unpin(e)} title="Unpin" style={{
+              position:'absolute', top:-5, right:-5,
+              background:'var(--surface2)', border:'1px solid var(--border)',
+              borderRadius:'50%', width:16, height:16,
+              fontSize:9, lineHeight:'14px', textAlign:'center',
+              color:'var(--muted)', cursor:'pointer', padding:0,
+            }}
+            onMouseEnter={ev => { ev.currentTarget.style.background='var(--danger)'; ev.currentTarget.style.color='#fff'; }}
+            onMouseLeave={ev => { ev.currentTarget.style.background='var(--surface2)'; ev.currentTarget.style.color='var(--muted)'; }}>
+              ×
+            </button>
+          </div>
+        ))}
+        <button onClick={() => setOpen(o => !o)} style={{
+          padding:'5px 10px', borderRadius:8, fontSize:11,
+          background:'var(--surface2)', border:'1px solid var(--border)',
+          color:'var(--muted)', cursor:'pointer', fontFamily:'var(--mono)',
+          transition:'all .15s',
+        }}
+        onMouseEnter={ev => { ev.currentTarget.style.borderColor='var(--accent2)'; ev.currentTarget.style.color='var(--text)'; }}
+        onMouseLeave={ev => { ev.currentTarget.style.borderColor='var(--border)'; ev.currentTarget.style.color='var(--muted)'; }}>
+          {open ? '▲ Less' : '▼ More'}
+        </button>
+      </div>
+
+      {/* Expanded panel */}
+      {open && (
+        <div style={{
+          background:'var(--surface2)', border:'1px solid var(--border)',
+          borderRadius:10, padding:'12px 14px',
+          maxHeight:220, overflowY:'auto', marginBottom:8,
+        }}>
+          {EMOJI_CATEGORIES.map(cat => (
+            <div key={cat.name} style={{marginBottom:14}}>
+              <div style={{
+                fontSize:9, fontFamily:'var(--mono)', color:'var(--muted)',
+                letterSpacing:'.08em', textTransform:'uppercase', marginBottom:6,
+              }}>
+                {cat.name}
+              </div>
+              <div style={{display:'flex',flexWrap:'wrap',gap:3}}>
+                {cat.emojis.map(e => {
+                  const isPinned = pinned.includes(e);
+                  return (
+                    <div key={e} style={{position:'relative',display:'inline-flex'}}>
+                      <button onClick={() => onInsert(e)} title="Insert" style={{
+                        fontSize:19, padding:'4px 6px', borderRadius:6, cursor:'pointer',
+                        background:'transparent', border:'1px solid transparent',
+                        lineHeight:1, transition:'background .1s',
+                      }}
+                      onMouseEnter={ev => ev.currentTarget.style.background='var(--surface)'}
+                      onMouseLeave={ev => ev.currentTarget.style.background='transparent'}>
+                        {e}
+                      </button>
+                      <button onClick={() => isPinned ? unpin(e) : pin(e)} title={isPinned ? 'Unpin' : 'Pin'} style={{
+                        position:'absolute', top:-3, right:-3,
+                        background: isPinned ? 'var(--accent)' : 'var(--surface)',
+                        border:`1px solid ${isPinned ? 'var(--accent)' : 'var(--border)'}`,
+                        borderRadius:'50%', width:13, height:13,
+                        fontSize:7, lineHeight:'11px', textAlign:'center',
+                        color: isPinned ? '#0d0f14' : 'var(--muted)',
+                        cursor:'pointer', padding:0,
+                      }}>
+                        {isPinned ? '★' : '☆'}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── STUDY PAGE ───────────────────────────────────────────────────────────────
 function StudyPage({ lists, onSaveWord }) {
   // ── Persisted list selection ─────────────────────────────────────────────
@@ -884,11 +994,7 @@ function StudyPage({ lists, onSaveWord }) {
         {noting ? (
           <div className="card card-p" style={{marginBottom:16}}>
             <div className="field-label">Your note</div>
-            <div className="emoji-row" style={{marginBottom:10}}>
-              {QUICK_EMOJIS.map(e => (
-                <button key={e} className="emoji-btn" onClick={() => addEmoji(e)}>{e}</button>
-              ))}
-            </div>
+            <EmojiPicker onInsert={addEmoji} />
             <textarea className="field" value={noteVal}
               onChange={e => { noteRef.current = e.target.value; setNoteVal(e.target.value); }}
               placeholder="Type your note…" rows={3}/>
@@ -1240,7 +1346,7 @@ const WL_MODES = ['View','Modify','Delete','Question Type'];
 
 function WordlistPage({ lists, setLists, activeListId, setActiveListId, allWords, customFields, onSaveCustomFields }) {
   // Local navigation: which list is being viewed (null = list browser)
-  const [viewingListId, setViewingListId] = useState(activeListId);
+  const [viewingListId, setViewingListId] = useState(null);
 
   const [mode, setMode] = useState('View');
   const [visibleFields, setVisibleFields] = useState(() => ls('wl_vis_fields', ['word','meaning','translation_en','note']));
