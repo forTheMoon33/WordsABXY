@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import ExcelJS from 'exceljs';
 
 // ─── CSS injected globally ───────────────────────────────────────────────────
@@ -246,24 +246,20 @@ function buildQuizOptions(words, current, answerKey) {
 }
 
 // ─── Spaced Repetition (SM-2 simplified) ─────────────────────────────────────
-// Intervals in hours: new → 1h → 3h → 24h → 72h → 168h → 504h …
 const SRS_INTERVALS = [0, 1, 3, 24, 72, 168, 504];
 
-// Returns true if word is due for review right now
 function isDueNow(stat) {
   if (!stat || stat.srsLevel === undefined || stat.srsLevel === 0) return true;
   if (!stat.nextReviewAt) return true;
   return Date.now() >= stat.nextReviewAt;
 }
 
-// Advance or demote SRS level; return updated stat object
 function updateSRS(stat = {}, correct) {
   const now = Date.now();
   let level = stat.srsLevel ?? 0;
   if (correct) {
     level = Math.min(level + 1, SRS_INTERVALS.length - 1);
   } else {
-    // Wrong: drop back two levels (but never below 1 so it reschedules soon)
     level = Math.max(1, level - 2);
   }
   const hoursUntilNext = SRS_INTERVALS[level] ?? 168;
@@ -279,7 +275,6 @@ function updateSRS(stat = {}, correct) {
   };
 }
 
-// Human-readable label for next review time
 function nextReviewLabel(stat) {
   if (!stat?.nextReviewAt) return 'now';
   const diff = stat.nextReviewAt - Date.now();
@@ -292,14 +287,47 @@ function nextReviewLabel(stat) {
 
 const QUICK_EMOJIS = ['⭐','❤️','🔥','💡','❓','😅','🧠','📌','👀','✅','❌','🎯'];
 
-// Extract emoji characters from a note string for display as badge
 function extractEmojis(note) {
   if (!note) return '';
   const emojiRegex = /\p{Emoji_Presentation}|\p{Extended_Pictographic}/gu;
   const matches = note.match(emojiRegex);
   if (!matches) return '';
-  // deduplicate, keep up to 4
   return [...new Set(matches)].slice(0, 4).join('');
+}
+
+// ─── Demo data ────────────────────────────────────────────────────────────────
+const DEMO_WORDS = [
+  { id:1, word:'ephemeral', gender:'', meaning:'lasting a very short time', translation_en:'transient', translation_cn:'短暂的', example:'The joy was ephemeral.', example_without_word:'The joy was _____.', note:'', create_date:'2025-01-01', practice_time:0 },
+  { id:2, word:'ubiquitous', gender:'', meaning:'present everywhere', translation_en:'omnipresent', translation_cn:'无处不在的', example:'Smartphones are ubiquitous.', example_without_word:'Smartphones are _____.', note:'', create_date:'2025-01-01', practice_time:0 },
+  { id:3, word:'resilient', gender:'', meaning:'recovering quickly from difficulty', translation_en:'tough', translation_cn:'有韧性的', example:'She is resilient.', example_without_word:'She is _____.', note:'', create_date:'2025-01-01', practice_time:0 },
+];
+const DEMO_CARD_TYPES = [{ id:1, questionKey:'word', answerKey:'meaning', name:'word → meaning' }];
+
+// ─── Storage migration ────────────────────────────────────────────────────────
+// Old shape: global 'wordlist' + global 'cardTypes' + 'wl_lists' with {id,name,wordIds[]}
+// New shape: 'wl_lists' with {id, name, words[], cardTypes[]}
+function migrateStorage() {
+  const stored = ls('wl_lists', null);
+  // Already new format: list items have a .words array
+  if (stored && stored.length > 0 && Array.isArray(stored[0]?.words)) return stored;
+
+  const oldWords = ls('wordlist', null);
+  const oldCardTypes = ls('cardTypes', null);
+
+  if (oldWords !== null || oldCardTypes !== null) {
+    localStorage.removeItem('wordlist');
+    localStorage.removeItem('cardTypes');
+    const newLists = [{
+      id: 1,
+      name: 'My Words',
+      words: oldWords ?? DEMO_WORDS,
+      cardTypes: oldCardTypes ?? DEMO_CARD_TYPES,
+    }];
+    lsSave('wl_lists', newLists);
+    return newLists;
+  }
+
+  return null; // fresh start — caller will use demo data
 }
 
 // ─── Popup ───────────────────────────────────────────────────────────────────
@@ -322,15 +350,14 @@ function ResultPopup({ correct, onClose }) {
 
 // ─── DAILY PAGE ──────────────────────────────────────────────────────────────
 const CHOICE_LABELS = ['A','B','C','D'];
-// Playful gamepad-style colors per slot (static, not tied to correct/wrong)
 const SLOT_COLORS = [
-  { bg:'#1a2a1a', border:'#4caf50', text:'#7fff7f' }, // green  – A
-  { bg:'#1a1a2e', border:'#5b8fff', text:'#8fb4ff' }, // blue   – B
-  { bg:'#2a1a1a', border:'#ff5b7f', text:'#ff8fa3' }, // red    – C
-  { bg:'#2a2a1a', border:'#ffc85b', text:'#ffe08f' }, // yellow – D
+  { bg:'#1a2a1a', border:'#4caf50', text:'#7fff7f' },
+  { bg:'#1a1a2e', border:'#5b8fff', text:'#8fb4ff' },
+  { bg:'#2a1a1a', border:'#ff5b7f', text:'#ff8fa3' },
+  { bg:'#2a2a1a', border:'#ffc85b', text:'#ffe08f' },
 ];
 
-function DailyPage({ words, cardTypes, stats, onSaveStats }) {
+function DailyPage({ words, cardTypes, stats, onSaveStats, lists, setLists, activeListId, setActiveListId }) {
   const [questions, setQuestions] = useState(null);
   const [qi, setQi] = useState(0);
   const [selected, setSelected] = useState(null);
@@ -340,7 +367,6 @@ function DailyPage({ words, cardTypes, stats, onSaveStats }) {
   const [score, setScore] = useState(0);
   const [wrongIds, setWrongIds] = useState([]);
 
-  // Use refs so stats updates and sessionWords never re-trigger buildQuestions
   const statsRef = useRef(stats);
   useEffect(() => { statsRef.current = stats; }, [stats]);
   const sessionWordsRef = useRef([]);
@@ -350,7 +376,6 @@ function DailyPage({ words, cardTypes, stats, onSaveStats }) {
   const buildQuestions = useCallback(() => {
     if (!cardTypes.length || words.length === 0) return;
     const ct = cardTypes[0];
-    // Due = words whose SRS timer has elapsed (or never reviewed)
     const due = words.filter(w => isDueNow(statsRef.current[w.id]));
     if (due.length === 0) { setQuestions([]); return; }
     const pool = shuffle(due).slice(0, 20);
@@ -363,7 +388,7 @@ function DailyPage({ words, cardTypes, stats, onSaveStats }) {
     })));
     setQi(0); setSelected(null); setConfirmed(false); setDone(false);
     setScore(0); setWrongIds([]);
-  }, [cardTypes, words]); // stats intentionally omitted — read via statsRef
+  }, [cardTypes, words]);
 
   const buildCheckAgain = useCallback(() => {
     if (!cardTypes.length || sessionWordsRef.current.length === 0) return;
@@ -379,7 +404,7 @@ function DailyPage({ words, cardTypes, stats, onSaveStats }) {
     ));
     setQi(0); setSelected(null); setConfirmed(false); setDone(false);
     setScore(0); setWrongIds([]);
-  }, [cardTypes, words]); // sessionWordsRef is stable, no need in deps
+  }, [cardTypes, words]);
 
   useEffect(() => { buildQuestions(); }, [buildQuestions]);
 
@@ -394,7 +419,6 @@ function DailyPage({ words, cardTypes, stats, onSaveStats }) {
   );
 
   if (!questions || questions.length === 0) {
-    // Show next upcoming review time
     const upcoming = words
       .map(w => ({ w, s: stats[w.id] }))
       .filter(({ s }) => s?.nextReviewAt && s.nextReviewAt > Date.now())
@@ -467,7 +491,6 @@ function DailyPage({ words, cardTypes, stats, onSaveStats }) {
       {popup && <ResultPopup correct={popup==='correct'} onClose={() => { setPopup(null); if(confirmed) handleNext(); }} />}
       <div className="page-inner">
 
-        {/* Header row */}
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
           <div className="page-title" style={{fontSize:16}}>Daily Practice</div>
           <div className="badge badge-muted mono">{qi+1} / {questions.length}</div>
@@ -476,26 +499,22 @@ function DailyPage({ words, cardTypes, stats, onSaveStats }) {
           <div className="prog-fill" style={{width:pct+'%'}}/>
         </div>
 
-        {/* Word card — centred, large */}
         <div style={{
           background:'var(--surface)', border:'1px solid var(--border)',
           borderRadius:20, padding:'32px 28px 24px',
           marginBottom:24, textAlign:'center', position:'relative',
         }}>
-          {/* SRS info + hard-word flag top-left */}
           <div style={{position:'absolute',top:14,left:16,display:'flex',alignItems:'center',gap:6}}>
             <span style={{fontSize:10,fontFamily:'var(--mono)',color:'var(--muted)'}}>{srsLabel}</span>
             {isHardWord && <span title={`Wrong ${wordStat.totalWrong} times`} style={{fontSize:13}}>🔴</span>}
           </div>
 
-          {/* Emoji badge top-right */}
           {emojiTag && (
             <div style={{position:'absolute',top:12,right:14,fontSize:22,lineHeight:1}}>
               {emojiTag}
             </div>
           )}
 
-          {/* The word */}
           <div style={{
             fontFamily:'var(--mono)', fontWeight:700,
             fontSize: q.word[q.ct.questionKey]?.length > 12 ? 28 : 42,
@@ -506,7 +525,6 @@ function DailyPage({ words, cardTypes, stats, onSaveStats }) {
           </div>
         </div>
 
-        {/* Choices — 2×2 grid, gamepad style */}
         <div style={{
           display:'grid', gridTemplateColumns:'1fr 1fr',
           gap:10, marginBottom:20,
@@ -537,7 +555,6 @@ function DailyPage({ words, cardTypes, stats, onSaveStats }) {
                   display:'flex', flexDirection:'column', gap:4,
                   ...extraStyle,
                 }}>
-                {/* Gamepad letter label */}
                 <div style={{
                   fontFamily:'var(--mono)', fontSize:11, fontWeight:700,
                   color: border, opacity: confirmed ? 0.7 : 1,
@@ -558,7 +575,6 @@ function DailyPage({ words, cardTypes, stats, onSaveStats }) {
           })}
         </div>
 
-        {/* Action button */}
         {!confirmed ? (
           <button className="btn btn-primary"
             style={{width:'100%',justifyContent:'center',padding:'15px',fontSize:14}}
@@ -579,23 +595,21 @@ function DailyPage({ words, cardTypes, stats, onSaveStats }) {
 }
 
 // ─── STUDY PAGE ───────────────────────────────────────────────────────────────
-function StudyPage({ words, onSaveWords }) {
+function StudyPage({ words, onSaveWord, lists, setLists, activeListId, setActiveListId }) {
   const [idx, setIdx] = useState(0);
   const [noting, setNoting] = useState(false);
   const [noteVal, setNoteVal] = useState('');
   const [quit, setQuit] = useState(false);
   const [done, setDone] = useState(false);
-  // Keep a stable pool based on word ids at session start, so saving a note
-  // doesn't cause pool to shrink and reset idx mid-session.
+
+  // Build stable pool from words prop at session start (not from localStorage directly)
   const [poolIds] = useState(() => {
-    const stored = ls('wordlist', []);
-    const unstudied = stored.filter(w => !w.note || w.note.trim() === '');
-    const source = unstudied.length > 0 ? unstudied : stored;
+    const unstudied = words.filter(w => !w.note || w.note.trim() === '');
+    const source = unstudied.length > 0 ? unstudied : words;
     return source.map(w => w.id);
   });
   const pool = poolIds.map(id => words.find(w => w.id === id)).filter(Boolean);
 
-  // noteRef always holds the current textarea value so saveNote never reads stale state
   const noteRef = useRef('');
 
   useEffect(() => {
@@ -604,7 +618,7 @@ function StudyPage({ words, onSaveWords }) {
       setNoteVal(val);
       noteRef.current = val;
     }
-  // Only re-sync when the word index changes, not when words prop changes
+  // Only re-sync when word index changes
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idx]);
 
@@ -628,10 +642,8 @@ function StudyPage({ words, onSaveWords }) {
   const word = pool[idx];
 
   const saveNote = () => {
-    // noteRef.current always holds latest value, safe even after emoji clicks
     const finalNote = noteRef.current;
-    const updated = words.map(w => w.id === word.id ? { ...w, note: finalNote } : w);
-    onSaveWords(updated);
+    onSaveWord({ ...word, note: finalNote });
     setNoteVal(finalNote);
     setNoting(false);
   };
@@ -660,7 +672,6 @@ function StudyPage({ words, onSaveWords }) {
       <button className="quit-btn" onClick={() => setQuit(true)}>Quit ✕</button>
       <div className="page-inner" style={{paddingTop:60}}>
 
-        {/* Progress */}
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
           <span className="badge badge-muted mono">{idx+1} / {pool.length}</span>
           <div className="prog-bar" style={{flex:1,margin:'0 16px'}}>
@@ -668,7 +679,6 @@ function StudyPage({ words, onSaveWords }) {
           </div>
         </div>
 
-        {/* Main word card */}
         <div className="card card-p" style={{marginBottom:16}}>
           <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:8}}>
             <div style={{flex:1}}>
@@ -692,7 +702,6 @@ function StudyPage({ words, onSaveWords }) {
           </div>
         </div>
 
-        {/* Note section */}
         {noting ? (
           <div className="card card-p" style={{marginBottom:16}}>
             <div className="field-label">Your note</div>
@@ -718,7 +727,6 @@ function StudyPage({ words, onSaveWords }) {
           </div>
         ) : null}
 
-        {/* Action row */}
         <div style={{display:'flex',gap:10}}>
           {!noting && (
             <button className="btn btn-ghost" style={{flex:1,justifyContent:'center'}}
@@ -833,7 +841,6 @@ function ImportWizard({ words, customFields, onSaveWords, onSaveCustomFields, on
           Import from Excel
         </div>
 
-        {/* Step indicator */}
         <div style={{display:'flex',gap:0,marginBottom:24,borderRadius:8,overflow:'hidden',
           border:'1px solid var(--border)'}}>
           {STEPS.map((s,i) => {
@@ -851,7 +858,6 @@ function ImportWizard({ words, customFields, onSaveWords, onSaveCustomFields, on
           })}
         </div>
 
-        {/* ── Pick ── */}
         {step === 'pick' && (
           <div style={{textAlign:'center',padding:'32px 0'}}>
             <div style={{fontSize:48,marginBottom:16}}>📊</div>
@@ -865,7 +871,6 @@ function ImportWizard({ words, customFields, onSaveWords, onSaveCustomFields, on
           </div>
         )}
 
-        {/* ── Map ── */}
         {step === 'map' && fileData && (
           <div>
             <div style={{color:'var(--muted)',fontSize:12,marginBottom:14}}>
@@ -922,7 +927,6 @@ function ImportWizard({ words, customFields, onSaveWords, onSaveCustomFields, on
           </div>
         )}
 
-        {/* ── Preview ── */}
         {step === 'preview' && fileData && (
           <div>
             <div style={{color:'var(--muted)',fontSize:12,marginBottom:14}}>
@@ -983,7 +987,6 @@ function ImportWizard({ words, customFields, onSaveWords, onSaveCustomFields, on
           </div>
         )}
 
-        {/* ── Done ── */}
         {step === 'done' && (
           <div style={{textAlign:'center',padding:'32px 0'}}>
             <div style={{fontSize:48,marginBottom:16}}>✅</div>
@@ -1005,7 +1008,6 @@ const BASIC_FIELDS_SET = new Set(['word','gender','meaning','translation_en','tr
 function WordEditModal({ word, allDisplayFields, onSave, onClose }) {
   const [draft, setDraft] = useState({ ...word });
 
-  // Close on Escape
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
@@ -1055,51 +1057,53 @@ function WordEditModal({ word, allDisplayFields, onSave, onClose }) {
 // ─── WORDLIST PAGE ────────────────────────────────────────────────────────────
 const WL_MODES = ['View','Modify','Delete','Question Type'];
 
-function WordlistPage({ words, cardTypes, customFields, onSaveWords, onSaveCardTypes, onSaveCustomFields }) {
-  const [lists, setLists] = useState(() => ls('wl_lists', [])); // [{id,name,wordIds}]
-  const [activeList, setActiveList] = useState(null); // null = list browser
+function WordlistPage({ lists, setLists, activeListId, setActiveListId, allWords, customFields, onSaveCustomFields }) {
+  // Local navigation: which list is being viewed (null = list browser)
+  const [viewingListId, setViewingListId] = useState(activeListId);
+
   const [mode, setMode] = useState('View');
-
-  // View mode prefs
   const [visibleFields, setVisibleFields] = useState(() => ls('wl_vis_fields', ['word','meaning','translation_en','note']));
-
-  // Edit modal
   const [editWord, setEditWord] = useState(null);
-
-  // Modify mode
   const [showAddForm, setShowAddForm] = useState(false);
   const [newRow, setNewRow] = useState({});
   const [filterText, setFilterText] = useState('');
-
-  // Delete mode
   const [selected, setSelected] = useState(new Set());
-
-  // New list inline form
   const [showNewListForm, setShowNewListForm] = useState(false);
   const [newListName, setNewListName] = useState('');
-
-  // Question type wizard
-  const [qtStep, setQtStep] = useState('list'); // 'list'|'selectQ'|'selectA'|'done'
+  const [qtStep, setQtStep] = useState('list');
   const [qtDraft, setQtDraft] = useState({});
-
   const [showWizard, setShowWizard] = useState(false);
-  const saveLists = (l) => { setLists(l); lsSave('wl_lists', l); };
+
   const saveVis = (f) => { setVisibleFields(f); lsSave('wl_vis_fields', f); };
 
-  // All display fields: basic + any imported custom fields
+  // Resolve the list currently being viewed in this page
+  // '__all__' is a virtual read-only view of all words
+  const viewingList = viewingListId === '__all__'
+    ? { id: '__all__', name: 'All Words', words: allWords, cardTypes: [] }
+    : lists.find(l => l.id === viewingListId) ?? null;
+
+  const words = viewingList?.words ?? [];
+  const cardTypes = viewingList?.cardTypes ?? [];
+  const isReadOnly = viewingListId === '__all__';
+
   const BASIC_FIELDS_DISPLAY = ['word','gender','meaning','translation_en','translation_cn','example','example_without_word','note'];
   const allDisplayFields = [...BASIC_FIELDS_DISPLAY, ...(customFields||[]).filter(f => !BASIC_FIELDS_DISPLAY.includes(f))];
 
-  // words for active list
-  const listWords = activeList
-    ? words.filter(w => activeList.wordIds?.includes(w.id))
+  const filtered = filterText
+    ? words.filter(w => allDisplayFields.some(f => String(w[f]||'').toLowerCase().includes(filterText.toLowerCase())))
     : words;
 
-  const filtered = filterText
-    ? listWords.filter(w => allDisplayFields.some(f => String(w[f]||'').toLowerCase().includes(filterText.toLowerCase())))
-    : listWords;
+  // Save words/cardTypes to the viewing list
+  const onSaveWords = (newWords) => {
+    if (isReadOnly || !viewingListId) return;
+    setLists(lists.map(l => l.id === viewingListId ? { ...l, words: newWords } : l));
+  };
 
-  // ── helpers ─────────────────────────────────────────────
+  const onSaveCardTypes = (newCardTypes) => {
+    if (isReadOnly || !viewingListId) return;
+    setLists(lists.map(l => l.id === viewingListId ? { ...l, cardTypes: newCardTypes } : l));
+  };
+
   const toggleField = (f) => {
     saveVis(visibleFields.includes(f) ? visibleFields.filter(x=>x!==f) : [...visibleFields, f]);
   };
@@ -1121,89 +1125,55 @@ function WordlistPage({ words, cardTypes, customFields, onSaveWords, onSaveCardT
 
   const triggerImport = () => setShowWizard(true);
 
-  // ── QT wizard ───────────────────────────────────────────
-  const allFields = allDisplayFields;
-
-  // ── create list ─────────────────────────────────────────
-  const createList = () => setShowNewListForm(true);
-  const confirmCreateList = () => {
-    if (!newListName.trim()) return;
-    const l = { id: Date.now(), name: newListName.trim(), wordIds: words.map(w => w.id) };
-    saveLists([...lists, l]);
-    setNewListName(''); setShowNewListForm(false);
+  // Navigate to a list (sets both local nav and global activeListId)
+  const openList = (listId) => {
+    setViewingListId(listId);
+    // Don't change activeListId for the virtual "All Words" view
+    if (listId !== '__all__') setActiveListId(listId);
+    setMode('View');
+    setSelected(new Set());
+    setFilterText('');
   };
 
-  // ── render ──────────────────────────────────────────────
-  if (!activeList && lists.length === 0 && words.length === 0) return (
+  const goBack = () => {
+    setViewingListId(null);
+    setMode('View');
+    setSelected(new Set());
+    setFilterText('');
+  };
+
+  const confirmCreateList = () => {
+    if (!newListName.trim()) return;
+    const newList = { id: Date.now(), name: newListName.trim(), words: [], cardTypes: [] };
+    setLists([...lists, newList]);
+    setNewListName('');
+    setShowNewListForm(false);
+  };
+
+  const allFields = allDisplayFields;
+
+  // ── Empty state (no lists at all) ──────────────────────────────────────────
+  if (!viewingList && lists.length === 0) return (
     <div className="page">
       {showWizard && (
-        <ImportWizard words={words} customFields={customFields}
-          onSaveWords={onSaveWords} onSaveCustomFields={onSaveCustomFields}
+        <ImportWizard words={[]} customFields={customFields}
+          onSaveWords={() => {}} onSaveCustomFields={onSaveCustomFields}
           onClose={() => setShowWizard(false)}/>
       )}
       <div className="page-inner">
         <div className="page-header"><div className="page-title">Wordlist</div></div>
         <div className="empty-state">
           <div className="e-icon">📂</div>
-          <div className="e-label">No words yet. Import a file or add manually.</div>
-          <button className="btn btn-primary" style={{marginTop:20}} onClick={triggerImport}>
-            <Icon.Upload/> Import File
+          <div className="e-label">No lists yet. Create a list to get started.</div>
+          <button className="btn btn-primary" style={{marginTop:20}} onClick={() => setShowNewListForm(true)}>
+            <Icon.Plus/> New List
           </button>
         </div>
-      </div>
-    </div>
-  );
-
-  // List browser — show whenever no active list is selected (and not empty state above)
-  if (!activeList) return (
-    <div className="page">
-      {showWizard && (
-        <ImportWizard words={words} customFields={customFields}
-          onSaveWords={onSaveWords} onSaveCustomFields={onSaveCustomFields}
-          onClose={() => setShowWizard(false)}/>
-      )}
-      <div className="page-inner">
-        <div className="page-header">
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
-            <div>
-              <div className="page-title">Wordlist</div>
-              <div className="page-sub">{words.length} words total</div>
-            </div>
-            <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-              <button className="btn btn-ghost btn-sm" onClick={triggerImport}><Icon.Upload/> Import</button>
-              <button className="btn btn-primary btn-sm" onClick={createList}><Icon.Plus/> New List</button>
-            </div>
-          </div>
-        </div>
-        {/* All words shortcut */}
-        <div className="card card-p" style={{marginBottom:12,cursor:'pointer',display:'flex',justifyContent:'space-between',alignItems:'center'}}
-          onClick={() => setActiveList({id:'all',name:'All Words',wordIds: words.map(w=>w.id)})}>
-          <div>
-            <div style={{fontFamily:'var(--mono)',fontSize:15}}>All Words</div>
-            <div style={{color:'var(--muted)',fontSize:12,marginTop:2}}>{words.length} words</div>
-          </div>
-          <Icon.ChevronRight/>
-        </div>
-        {lists.map(l => (
-          <div key={l.id} className="card card-p" style={{marginBottom:8,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-            <div style={{cursor:'pointer',flex:1}} onClick={() => setActiveList(l)}>
-              <div style={{fontFamily:'var(--mono)',fontSize:15}}>{l.name}</div>
-              <div style={{color:'var(--muted)',fontSize:12,marginTop:2}}>
-                {words.filter(w=>l.wordIds?.includes(w.id)).length} words
-              </div>
-            </div>
-            <button className="btn btn-danger btn-sm" onClick={() => saveLists(lists.filter(x=>x.id!==l.id))}>
-              <Icon.Trash/>
-            </button>
-          </div>
-        ))}
         {showNewListForm && (
-          <div className="card card-p" style={{marginTop:8}}>
+          <div className="card card-p" style={{marginTop:16}}>
             <div style={{fontFamily:'var(--mono)',fontSize:13,marginBottom:10}}>New List</div>
-            <input className="field" autoFocus
-              placeholder="List name…"
-              value={newListName}
-              onChange={e => setNewListName(e.target.value)}
+            <input className="field" autoFocus placeholder="List name…"
+              value={newListName} onChange={e => setNewListName(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') confirmCreateList(); if (e.key === 'Escape') { setShowNewListForm(false); setNewListName(''); } }}
             />
             <div style={{display:'flex',gap:8,marginTop:10}}>
@@ -1216,7 +1186,79 @@ function WordlistPage({ words, cardTypes, customFields, onSaveWords, onSaveCardT
     </div>
   );
 
-  // Single list view (or all words)
+  // ── List browser ───────────────────────────────────────────────────────────
+  if (!viewingList) return (
+    <div className="page">
+      {showWizard && viewingListId && (
+        <ImportWizard words={words} customFields={customFields}
+          onSaveWords={onSaveWords} onSaveCustomFields={onSaveCustomFields}
+          onClose={() => setShowWizard(false)}/>
+      )}
+      <div className="page-inner">
+        <div className="page-header">
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+            <div>
+              <div className="page-title">Wordlist</div>
+              <div className="page-sub">{allWords.length} words across {lists.length} list{lists.length!==1?'s':''}</div>
+            </div>
+            <button className="btn btn-primary btn-sm" onClick={() => setShowNewListForm(true)}><Icon.Plus/> New List</button>
+          </div>
+        </div>
+
+        {/* All Words shortcut */}
+        {allWords.length > 0 && (
+          <div className="card card-p" style={{marginBottom:12,cursor:'pointer',display:'flex',justifyContent:'space-between',alignItems:'center'}}
+            onClick={() => openList('__all__')}>
+            <div>
+              <div style={{fontFamily:'var(--mono)',fontSize:15}}>All Words</div>
+              <div style={{color:'var(--muted)',fontSize:12,marginTop:2}}>{allWords.length} words · read-only</div>
+            </div>
+            <Icon.ChevronRight/>
+          </div>
+        )}
+
+        {lists.map(l => (
+          <div key={l.id} className="card card-p" style={{marginBottom:8,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <div style={{cursor:'pointer',flex:1}} onClick={() => openList(l.id)}>
+              <div style={{display:'flex',alignItems:'center',gap:8}}>
+                <span style={{fontFamily:'var(--mono)',fontSize:15}}>{l.name}</span>
+                {l.id === activeListId && (
+                  <span className="badge badge-accent" style={{fontSize:9}}>active</span>
+                )}
+              </div>
+              <div style={{color:'var(--muted)',fontSize:12,marginTop:2}}>
+                {l.words.length} word{l.words.length!==1?'s':''} · {l.cardTypes.length} card type{l.cardTypes.length!==1?'s':''}
+              </div>
+            </div>
+            <button className="btn btn-danger btn-sm" onClick={() => {
+              if (!window.confirm(`Delete list "${l.name}"? Words inside will also be deleted.`)) return;
+              const newLists = lists.filter(x => x.id !== l.id);
+              setLists(newLists);
+              if (activeListId === l.id) setActiveListId(newLists[0]?.id ?? null);
+            }}>
+              <Icon.Trash/>
+            </button>
+          </div>
+        ))}
+
+        {showNewListForm && (
+          <div className="card card-p" style={{marginTop:8}}>
+            <div style={{fontFamily:'var(--mono)',fontSize:13,marginBottom:10}}>New List</div>
+            <input className="field" autoFocus placeholder="List name…"
+              value={newListName} onChange={e => setNewListName(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') confirmCreateList(); if (e.key === 'Escape') { setShowNewListForm(false); setNewListName(''); } }}
+            />
+            <div style={{display:'flex',gap:8,marginTop:10}}>
+              <button className="btn btn-primary btn-sm" onClick={confirmCreateList} disabled={!newListName.trim()}>Create</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => { setShowNewListForm(false); setNewListName(''); }}>Cancel</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  // ── List detail view ────────────────────────────────────────────────────────
   return (
     <div className="page">
       {showWizard && (
@@ -1234,32 +1276,45 @@ function WordlistPage({ words, cardTypes, customFields, onSaveWords, onSaveCardT
       )}
       <div className="page-inner">
         <div className="page-header">
-          <button className="back-link" onClick={() => { setActiveList(null); setMode('View'); setSelected(new Set()); }}>
+          <button className="back-link" onClick={goBack}>
             ← Back
           </button>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',flexWrap:'wrap',gap:8}}>
             <div>
-              <div className="page-title">{activeList?.name || 'All Words'}</div>
-              <div className="page-sub">{filtered.length} of {listWords.length} words</div>
+              <div style={{display:'flex',alignItems:'center',gap:8}}>
+                <div className="page-title">{viewingList.name}</div>
+                {!isReadOnly && viewingList.id === activeListId && (
+                  <span className="badge badge-accent" style={{fontSize:9}}>active</span>
+                )}
+                {isReadOnly && (
+                  <span className="badge badge-muted" style={{fontSize:9}}>read-only</span>
+                )}
+              </div>
+              <div className="page-sub">{filtered.length} of {words.length} words</div>
             </div>
             <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+              {!isReadOnly && viewingList.id !== activeListId && (
+                <button className="btn btn-ghost btn-sm" onClick={() => setActiveListId(viewingList.id)}>
+                  Set Active
+                </button>
+              )}
               {mode === 'View' && <button className="btn btn-ghost btn-sm" onClick={() => {
-                const blob = new Blob([JSON.stringify(listWords,null,2)],{type:'application/json'});
+                const blob = new Blob([JSON.stringify(words,null,2)],{type:'application/json'});
                 const a = document.createElement('a'); a.href=URL.createObjectURL(blob);
                 a.download='wordlist.json'; a.click();
               }}><Icon.Download/> Export</button>}
-              {mode === 'Modify' && <button className="btn btn-primary btn-sm" onClick={() => setShowAddForm(true)}><Icon.Plus/> Add</button>}
-              {mode === 'Modify' && <button className="btn btn-ghost btn-sm" onClick={triggerImport}><Icon.Upload/> Import</button>}
-              {mode === 'Delete' && selected.size > 0 && (
+              {mode === 'Modify' && !isReadOnly && <button className="btn btn-primary btn-sm" onClick={() => setShowAddForm(true)}><Icon.Plus/> Add</button>}
+              {mode === 'Modify' && !isReadOnly && <button className="btn btn-ghost btn-sm" onClick={triggerImport}><Icon.Upload/> Import</button>}
+              {mode === 'Delete' && !isReadOnly && selected.size > 0 && (
                 <button className="btn btn-danger btn-sm" onClick={deleteSelected}><Icon.Trash/> Delete ({selected.size})</button>
               )}
             </div>
           </div>
         </div>
 
-        {/* Mode tabs */}
+        {/* Mode tabs — hide Question Type for read-only All Words view */}
         <div className="mode-tabs">
-          {WL_MODES.map(m => (
+          {WL_MODES.filter(m => !isReadOnly || (m === 'View')).map(m => (
             <button key={m} className={`mode-tab ${mode===m?'active':''}`} onClick={() => setMode(m)}>{m}</button>
           ))}
         </div>
@@ -1279,14 +1334,14 @@ function WordlistPage({ words, cardTypes, customFields, onSaveWords, onSaveCardT
           </div>
         )}
 
-        {/* Search (modify + view) */}
+        {/* Search */}
         {(mode === 'View' || mode === 'Modify' || mode === 'Delete') && (
           <input className="field" style={{marginBottom:14}} placeholder="Search…"
             value={filterText} onChange={e => setFilterText(e.target.value)}/>
         )}
 
         {/* Add form */}
-        {mode === 'Modify' && showAddForm && (
+        {mode === 'Modify' && !isReadOnly && showAddForm && (
           <div className="card card-p" style={{marginBottom:16}}>
             <div style={{fontFamily:'var(--mono)',fontSize:13,marginBottom:12}}>New Word</div>
             {allDisplayFields.map(f => (
@@ -1303,7 +1358,7 @@ function WordlistPage({ words, cardTypes, customFields, onSaveWords, onSaveCardT
         )}
 
         {/* Question Type wizard */}
-        {mode === 'Question Type' && (
+        {mode === 'Question Type' && !isReadOnly && (
           <div className="wizard-step">
             {qtStep === 'list' && (
               <div>
@@ -1381,27 +1436,27 @@ function WordlistPage({ words, cardTypes, customFields, onSaveWords, onSaveCardT
           </div>
         )}
 
-        {/* Table (View / Modify / Delete) */}
+        {/* Table */}
         {(mode === 'View' || mode === 'Modify' || mode === 'Delete') && (
           <div style={{overflowX:'auto'}}>
             <table className="wl-table">
               <thead>
                 <tr>
-                  {mode === 'Delete' && <th><input type="checkbox" checked={selected.size === filtered.length && filtered.length > 0}
+                  {mode === 'Delete' && !isReadOnly && <th><input type="checkbox" checked={selected.size === filtered.length && filtered.length > 0}
                     onChange={e => setSelected(e.target.checked ? new Set(filtered.map(w=>w.id)) : new Set())}/></th>}
                   {(mode === 'View' ? visibleFields : allDisplayFields).map(f => (
                     <th key={f}>{f}</th>
                   ))}
-                  {mode === 'Modify' && <th>Actions</th>}
+                  {mode === 'Modify' && !isReadOnly && <th>Actions</th>}
                 </tr>
               </thead>
               <tbody>
                 {filtered.map(w => (
                   <tr key={w.id}
-                    onClick={mode === 'View' ? () => setEditWord(w) : undefined}
-                    style={mode === 'View' ? {cursor:'pointer'} : undefined}
+                    onClick={mode === 'View' && !isReadOnly ? () => setEditWord(w) : undefined}
+                    style={mode === 'View' && !isReadOnly ? {cursor:'pointer'} : undefined}
                   >
-                    {mode === 'Delete' && (
+                    {mode === 'Delete' && !isReadOnly && (
                       <td onClick={e => e.stopPropagation()}>
                         <input type="checkbox" checked={selected.has(w.id)}
                           onChange={() => setSelected(s => { const n=new Set(s); n.has(w.id)?n.delete(w.id):n.add(w.id); return n; })}/>
@@ -1414,7 +1469,7 @@ function WordlistPage({ words, cardTypes, customFields, onSaveWords, onSaveCardT
                         </span>
                       </td>
                     ))}
-                    {mode === 'Modify' && (
+                    {mode === 'Modify' && !isReadOnly && (
                       <td>
                         <button className="btn btn-ghost btn-sm" onClick={() => setEditWord(w)}><Icon.Edit/></button>
                       </td>
@@ -1434,10 +1489,12 @@ function WordlistPage({ words, cardTypes, customFields, onSaveWords, onSaveCardT
 }
 
 // ─── SETTINGS PAGE ────────────────────────────────────────────────────────────
-function SettingsPage({ words, cardTypes, stats, onSaveWords, onSaveCardTypes, onSaveStats }) {
+function SettingsPage({ lists, setLists, activeListId, setActiveListId, allWords, stats, onSaveStats }) {
+  const activeList = lists.find(l => l.id === activeListId) ?? lists[0] ?? null;
+  const cardTypes = activeList?.cardTypes ?? [];
 
   const exportAll = () => {
-    const data = { words, cardTypes, stats };
+    const data = { lists, stats };
     const blob = new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
     const a = document.createElement('a'); a.href=URL.createObjectURL(blob);
     a.download='wordsabxy-backup.json'; a.click();
@@ -1450,7 +1507,8 @@ function SettingsPage({ words, cardTypes, stats, onSaveWords, onSaveCardTypes, o
 
   const clearAll = () => {
     if (!window.confirm('Delete ALL words and progress? This cannot be undone.')) return;
-    onSaveWords([]); onSaveStats({}); onSaveCardTypes([]);
+    setLists(lists.map(l => ({ ...l, words: [], cardTypes: [] })));
+    onSaveStats({});
   };
 
   return (
@@ -1461,13 +1519,12 @@ function SettingsPage({ words, cardTypes, stats, onSaveWords, onSaveCardTypes, o
           <div className="page-sub">Configure your study setup</div>
         </div>
 
-        {/* Stats summary */}
         <div className="section-label">Progress</div>
         <div className="card card-p" style={{marginBottom:20}}>
           <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:16,textAlign:'center'}}>
             {[
-              { label:'Words', val: words.length },
-              { label:'Due Now', val: words.filter(w => isDueNow(stats[w.id])).length },
+              { label:'Words', val: allWords.length },
+              { label:'Due Now', val: allWords.filter(w => isDueNow(stats[w.id])).length },
               { label:'Struggling', val: Object.values(stats).filter(s=>(s.totalWrong||0)>=3).length },
               { label:'Card Types', val: cardTypes.length },
             ].map(item => (
@@ -1479,7 +1536,6 @@ function SettingsPage({ words, cardTypes, stats, onSaveWords, onSaveCardTypes, o
           </div>
         </div>
 
-        {/* Controller hint */}
         <div className="section-label">Controller</div>
         <div className="card card-p" style={{marginBottom:20}}>
           <div style={{color:'var(--muted)',fontSize:13,lineHeight:1.8}}>
@@ -1490,7 +1546,6 @@ function SettingsPage({ words, cardTypes, stats, onSaveWords, onSaveCardTypes, o
           </div>
         </div>
 
-        {/* Data */}
         <div className="section-label">Data</div>
         <div className="card" style={{marginBottom:20}}>
           {[
@@ -1505,7 +1560,6 @@ function SettingsPage({ words, cardTypes, stats, onSaveWords, onSaveCardTypes, o
           ))}
         </div>
 
-        {/* Hard words */}
         {Object.entries(stats).filter(([,s]) => (s.totalWrong||0) >= 3).length > 0 && (<>
           <div className="section-label">Struggling Words 🔴</div>
           <div className="card" style={{marginBottom:20}}>
@@ -1514,7 +1568,7 @@ function SettingsPage({ words, cardTypes, stats, onSaveWords, onSaveCardTypes, o
               .sort((a,b) => (b[1].totalWrong||0) - (a[1].totalWrong||0))
               .slice(0,10)
               .map(([wid, s]) => {
-                const w = words.find(x => String(x.id) === String(wid));
+                const w = allWords.find(x => String(x.id) === String(wid));
                 if (!w) return null;
                 return (
                   <div key={wid} style={{padding:'12px 20px', borderBottom:'1px solid var(--border)', display:'flex', justifyContent:'space-between', alignItems:'center'}}>
@@ -1530,7 +1584,6 @@ function SettingsPage({ words, cardTypes, stats, onSaveWords, onSaveCardTypes, o
           </div>
         </>)}
 
-        {/* SRS info */}
         <div className="section-label">About SRS</div>
         <div className="card card-p">
           <div style={{color:'var(--muted)',fontSize:13,lineHeight:1.9}}>
@@ -1548,27 +1601,50 @@ export default function App() {
   injectCSS();
 
   const [tab, setTab] = useState('daily');
-  const [words, setWords] = useState(() => {
-    const stored = ls('wordlist', null);
-    if (stored) return stored;
-    return [
-      { id:1, word:'ephemeral', gender:'', meaning:'lasting a very short time', translation_en:'transient', translation_cn:'短暂的', example:'The joy was ephemeral.', example_without_word:'The joy was _____.', note:'', create_date:'2025-01-01', practice_time:0 },
-      { id:2, word:'ubiquitous', gender:'', meaning:'present everywhere', translation_en:'omnipresent', translation_cn:'无处不在的', example:'Smartphones are ubiquitous.', example_without_word:'Smartphones are _____.', note:'', create_date:'2025-01-01', practice_time:0 },
-      { id:3, word:'resilient', gender:'', meaning:'recovering quickly from difficulty', translation_en:'tough', translation_cn:'有韧性的', example:'She is resilient.', example_without_word:'She is _____.', note:'', create_date:'2025-01-01', practice_time:0 },
-    ];
+
+  const [lists, setListsState] = useState(() => {
+    const migrated = migrateStorage();
+    return migrated ?? [{ id: 1, name: 'My Words', words: DEMO_WORDS, cardTypes: DEMO_CARD_TYPES }];
   });
-  const [cardTypes, setCardTypes] = useState(() => ls('cardTypes', [
-    { id:1, questionKey:'word', answerKey:'meaning', name:'word → meaning' }
-  ]));
+
+  const [activeListId, setActiveListIdState] = useState(() => ls('activeListId', null));
   const [stats, setStats] = useState(() => ls('wordstats', {}));
   const [customFields, setCustomFields] = useState(() => ls('customFields', []));
 
-  const saveWords = (w) => { setWords(w); lsSave('wordlist', w); };
-  const saveCardTypes = (c) => { setCardTypes(c); lsSave('cardTypes', c); };
+  // Persist-aware setters
+  const saveLists = useCallback((newLists) => {
+    setListsState(newLists);
+    lsSave('wl_lists', newLists);
+  }, []);
+
+  const setActiveListId = useCallback((id) => {
+    setActiveListIdState(id);
+    lsSave('activeListId', id);
+  }, []);
+
   const saveStats = (s) => { setStats(s); lsSave('wordstats', s); };
   const saveCustomFields = (f) => { setCustomFields(f); lsSave('customFields', f); };
 
-  // keyboard tab switch (1-4)
+  // Derived values
+  const allWords = useMemo(() => lists.flatMap(l => l.words), [lists]);
+  const activeList = lists.find(l => l.id === activeListId) ?? lists[0] ?? null;
+
+  // Ensure activeListId always points to a valid list
+  useEffect(() => {
+    if (lists.length > 0 && !lists.find(l => l.id === activeListId)) {
+      setActiveListId(lists[0].id);
+    }
+  }, [lists, activeListId, setActiveListId]);
+
+  // Update a single word across all lists (for StudyPage note saves)
+  const saveWordGlobal = useCallback((updatedWord) => {
+    saveLists(lists.map(l => ({
+      ...l,
+      words: l.words.map(w => w.id === updatedWord.id ? updatedWord : w),
+    })));
+  }, [lists, saveLists]);
+
+  // Keyboard tab switching (Ctrl+1-4)
   useEffect(() => {
     const tabs = ['daily','study','wordlist','settings'];
     const onKey = (e) => {
@@ -1589,10 +1665,32 @@ export default function App() {
 
   return (
     <>
-      {tab === 'daily'    && <DailyPage words={words} cardTypes={cardTypes} stats={stats} onSaveStats={saveStats}/>}
-      {tab === 'study'    && <StudyPage words={words} onSaveWords={saveWords}/>}
-      {tab === 'wordlist' && <WordlistPage words={words} cardTypes={cardTypes} customFields={customFields} onSaveWords={saveWords} onSaveCardTypes={saveCardTypes} onSaveCustomFields={saveCustomFields}/>}
-      {tab === 'settings' && <SettingsPage words={words} cardTypes={cardTypes} stats={stats} onSaveWords={saveWords} onSaveCardTypes={saveCardTypes} onSaveStats={saveStats}/>}
+      {tab === 'daily' && <DailyPage
+        words={allWords}
+        cardTypes={activeList?.cardTypes ?? []}
+        stats={stats}
+        onSaveStats={saveStats}
+        lists={lists} setLists={saveLists}
+        activeListId={activeListId} setActiveListId={setActiveListId}
+      />}
+      {tab === 'study' && <StudyPage
+        words={allWords}
+        onSaveWord={saveWordGlobal}
+        lists={lists} setLists={saveLists}
+        activeListId={activeListId} setActiveListId={setActiveListId}
+      />}
+      {tab === 'wordlist' && <WordlistPage
+        lists={lists} setLists={saveLists}
+        activeListId={activeListId} setActiveListId={setActiveListId}
+        allWords={allWords}
+        customFields={customFields} onSaveCustomFields={saveCustomFields}
+      />}
+      {tab === 'settings' && <SettingsPage
+        lists={lists} setLists={saveLists}
+        activeListId={activeListId} setActiveListId={setActiveListId}
+        allWords={allWords}
+        stats={stats} onSaveStats={saveStats}
+      />}
 
       <nav className="nav-bar">
         {NAV.map(n => (
